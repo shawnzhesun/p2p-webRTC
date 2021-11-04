@@ -6,7 +6,7 @@
         <title>p2p-webRTC</title>
     </head>
     <body>
-        <h1>Client</h1>
+        <h1 id="client-id"></h1>
 
         <table class="control">
             <tr>
@@ -34,9 +34,11 @@
         <script src="https://unpkg.com/peerjs@1.3.1/dist/peerjs.min.js"></script>
         <script type="text/javascript">
             (function () {
-
                 var peer = null; // own peer object
                 var conn = null;
+                var myId = Math.floor(100000 + Math.random() * 900000);
+                var clientConnections = new Map();
+                var clientIdMessage = document.getElementById("client-id");
                 var recvIdInput = document.getElementById("receiver-id");
                 var status = document.getElementById("status");
                 var message = document.getElementById("message");
@@ -44,6 +46,9 @@
                 var sendButton = document.getElementById("sendButton");
                 var clearMsgsButton = document.getElementById("clearMsgsButton");
                 var connectButton = document.getElementById("connect-button");
+                var hostConnection;
+
+                clientIdMessage.innerHTML = "Client ID: " + myId;
 
                 /**
                  * Create the Peer object for our end of the connection.
@@ -53,7 +58,7 @@
                  */
                 function initialize() {
                     // Create own peer object with connection to shared PeerJS server
-                    peer = new Peer({
+                    peer = new Peer(myId, {
                         host: 'localhost',
 	                    port: '3001',
                         path: '/peerjs',
@@ -70,15 +75,64 @@
 
                         console.log('ID: ' + peer.id);
                     });
+
                     peer.on('connection', function (c) {
-                        // Disallow incoming connections
-                        c.on('open', function() {
-                            c.send("Sender does not accept incoming connections");
-                            setTimeout(function() { c.close(); }, 500);
+                        console.log(
+                            `${c.peer} attempting to establish connection.`,
+                        );
+
+                        c.on('open', () => {
+                            console.log(
+                                `Connection to ${c.peer} established.`,
+                            );
+
+                            clientConnections.set(c.peer, c);
+                            console.log(clientConnections);
+
+                            const data = {
+                                sender: 'SYSTEM',
+                                message: `${c.peer} joined.`,
+                            };
+
+                            updatePeerList();
+                            addMessage(data.sender + ': ' + data.message);
+
+                            broadcast({
+                                ...data,
+                                peers: generatePeerList(),
+                            });
+                        });
+
+                        c.on('data', (data) => {
+                            console.log('Recvied data:\n', data);
+
+                            addMessage(data.sender + ': ' + data.message)
+
+                            broadcast({
+                                ...data,
+                                peers: generatePeerList(),
+                            });
+                        });
+
+                        c.on('close', () => {
+                            console.log(`Connection to ${c.peer} is closed.`);
+                            clientConnections.delete(c.peer);
+
+                            const data = {
+                                sender: 'SYSTEM',
+                                message: `${c.peer} left.`,
+                            };
+
+                            updatePeerList();
+                            addMessage(data.sender + ': ' + data.message)
+
+                            broadcast({
+                                ...data,
+                                peers: generatePeerList(),
+                            });
                         });
                     });
                     peer.on('disconnected', function () {
-                        status.innerHTML = "Connection lost. Please reconnect";
                         console.log('Connection lost. Please reconnect');
 
                         // Workaround for peer.reconnect deleting previous id
@@ -88,7 +142,6 @@
                     });
                     peer.on('close', function() {
                         conn = null;
-                        status.innerHTML = "Connection destroyed. Please refresh";
                         console.log('Connection destroyed');
                     });
                     peer.on('error', function (err) {
@@ -98,37 +151,37 @@
                 };
 
                 /**
-                 * Create the connection between the two Peers.
+                 * Connect to the peer server.
                  *
                  * Sets up callbacks that handle any events related to the
                  * connection and data received on it.
                  */
                 function join() {
-                    // Close old connection
-                    if (conn) {
-                        conn.close();
-                    }
+                    var hostId = recvIdInput.value;
 
-                    // Create connection to destination peer specified in the input field
-                    conn = peer.connect(recvIdInput.value, {
+                    hostConnection = peer.connect(hostId, {
                         reliable: true
                     });
 
-                    conn.on('open', function () {
-                        status.innerHTML = "Connected to: " + conn.peer;
-                        console.log("Connected to: " + conn.peer);
+                    hostConnection.on('open', () => {
+                        console.log(
+                            `Connection to ${hostConnection.peer} established.`,
+                        );
+                    });
 
-                        // Check URL params for comamnds that should be sent immediately
-                        var command = getUrlParam("command");
-                        if (command)
-                            conn.send(command);
+                    hostConnection.on('data', (data) => {
+                        addMessage(data.sender + ': ' + data.message)
+                        updatePeerList(data.peers);
                     });
-                    // Handle incoming data (messages only since this is the signal sender)
-                    conn.on('data', function (data) {
-                        addMessage("<span class=\"peerMsg\">Peer:</span> " + data);
-                    });
-                    conn.on('close', function () {
-                        status.innerHTML = "Connection closed";
+
+                    hostConnection.on('close', () => {
+                        console.log(
+                            `Connection to ${hostConnection.peer} is closed.`,
+                        );
+
+                        peer.destroy();
+
+                        location.reload();
                     });
                 };
 
@@ -148,20 +201,6 @@
                     else
                         return results[1];
                 };
-
-                /**
-                 * Send a signal via the peer connection and add it to the log.
-                 * This will only occur if the connection is still alive.
-                 */
-                 function signal(sigName) {
-                    if (conn && conn.open) {
-                        conn.send(sigName);
-                        console.log(sigName + " signal sent");
-                        addMessage(cueString + sigName);
-                    } else {
-                        console.log('Connection is closed');
-                    }
-                }
 
                 function addMessage(msg) {
                     var now = new Date();
@@ -188,6 +227,29 @@
                     addMessage("Msgs cleared");
                 };
 
+                function userLeft() {
+                    peer.disconnect();
+                }
+
+                function updatePeerList(peerList) {
+                    status.innerText = peerList
+                        ? peerList
+                        : generatePeerList();
+                }
+
+                function generatePeerList() {
+                    var peerList = Array.from(clientConnections.keys());
+                    console.log(JSON.stringify(peerList));
+                    peerList.push(`${myId} (HOST)`);
+                    return peerList.join(', ');
+                }
+
+                function broadcast(data) {
+                    clientConnections.forEach((connection) =>
+                        connection.send(data),
+                    );
+                }
+
                 // Listen for enter in message box
                 sendMessageBox.addEventListener('keypress', function (e) {
                     var event = e || window.event;
@@ -197,14 +259,24 @@
                 });
                 // Send message
                 sendButton.addEventListener('click', function () {
-                    if (conn && conn.open) {
-                        var msg = sendMessageBox.value;
-                        sendMessageBox.value = "";
-                        conn.send(msg);
-                        console.log("Sent: " + msg);
-                        addMessage("<span class=\"selfMsg\">Self: </span> " + msg);
-                    } else {
-                        console.log('Connection is closed');
+                    var msg = sendMessageBox.value;
+                    sendMessageBox.value = "";
+                    const data = {
+                        sender: myId,
+                        message: msg,
+                    };
+                    if (hostConnection) {
+                        console.log('SSS' + JSON.stringify(data));
+                        hostConnection.send(data);
+                    }
+                    // host send
+                    if (clientConnections && clientConnections.size > 0) {
+                        broadcast({
+                            ...data,
+                            peers: generatePeerList(),
+                        });
+
+                        addMessage(data.sender + ': ' + data.message);
                     }
                 });
 
@@ -213,7 +285,10 @@
                 // Start peer connection on click
                 connectButton.addEventListener('click', join);
 
-                // Since all our callbacks are setup, start the process of obtaining an ID
+                window.addEventListener('beforeunload', function () {
+                    userLeft();
+                }, false);
+
                 initialize();
             })();
         </script>

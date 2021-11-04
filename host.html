@@ -44,6 +44,7 @@
                 var sendMessageBox = document.getElementById("sendMessageBox");
                 var sendButton = document.getElementById("sendButton");
                 var clearMsgsButton = document.getElementById("clearMsgsButton");
+                var clientCount = 0;
 
                 /**
                  * Create the Peer object for our end of the connection.
@@ -73,18 +74,10 @@
                         status.innerHTML = "Awaiting connection...";
                     });
                     peer.on('connection', function (c) {
-                        // Allow only a single connection
-                        if (conn && conn.open) {
-                            c.on('open', function() {
-                                c.send("Already connected to another client");
-                                setTimeout(function() { c.close(); }, 500);
-                            });
-                            return;
-                        }
-
                         conn = c;
                         console.log("Connected to: " + conn.peer);
-                        status.innerHTML = "Connected";
+                        clientCount += 1;
+                        status.innerHTML = status.innerHTML += "<br><br>" + "User " + conn.peer + " joined, total users: " + clientCount;
                         ready();
                     });
                     peer.on('disconnected', function () {
